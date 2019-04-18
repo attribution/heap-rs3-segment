@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+
+require 'bundler/setup'
+
+ENV['APP_ENV'] ||= 'development'
+
+if ENV['APP_ENV'] == 'development'
+  require 'dotenv'
+  Dotenv.load
+end
+
+if ENV['ROLLBAR_ACCESS_TOKEN']
+  require 'rollbar'
+  Rollbar.configure do |config|
+    config.access_token = ENV['ROLLBAR_ACCESS_TOKEN']
+    config.environment = ENV['APP_ENV']
+  end
+end
+
+project_id, aws_s3_bucket, *_ = ARGV
+
+# ENV fallback
+project_id ||= ENV['PROJECT_ID']
+aws_s3_bucket ||= ENV['AWS_S3_BUCKET']
+
+puts "Starting... (project_id: #{project_id}, aws_s3_bucket: #{aws_s3_bucket})"
+
+raise unless project_id || aws_s3_bucket
+
+require 'segment/analytics'
+
+# dirty patch segment library
+module Segment
+  class Analytics
+    module Defaults
+      module Request
+        HOST = ENV['TRACKING_ENDPOINT']
+        # PORT = 9292
+        # RETRIES = 1
+      end
+
+      module MessageBatch
+        MAX_BYTES = 5_120_000
+        MAX_SIZE = 1_000
+      end
+    end
+  end
+end
+
+analytics = Segment::Analytics.new(
+  write_key: project_id,
+  on_error: Proc.new { |status, msg| print msg },
+  max_queue_size: 10_000
+  # stub: true
+)
+
+require 'pry'
+require 'heap-rs3-segment'
+
+HeapRS3Segment::Loader.new(
+  analytics,
+  ENV['AWS_ACCESS_KEY_ID'],
+  ENV['AWS_SECRET_ACCESS_KEY'],
+  ENV['AWS_REGION'],
+  aws_s3_bucket
+).call
