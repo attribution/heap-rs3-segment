@@ -18,6 +18,10 @@ module HeapRS3Segment
         instance_variable_get('@client').
         instance_variable_get('@max_queue_size')
       @analytics = analytics
+
+      @aliaz_cache = {}
+      @skip_types = [] # [:page, :track, :identify, :aliaz]
+      @identify_only_users = false
     end
 
     def call
@@ -30,7 +34,7 @@ module HeapRS3Segment
 
         next if already_synced
 
-        puts 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip sync and CTRL-D to continue'
+        puts 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip this sync, set @skip_types to skip certian event types and CTRL-D to continue'
         binding.pry
 
         next if already_synced
@@ -75,10 +79,10 @@ module HeapRS3Segment
       # custom sorter - any events then pageviews, identify, aliases
       index_type_name = ->(table) {
         idx_type = case table['name']
-        when 'user_migrations' then [4, :aliaz]
-        when 'users' then [3, :identify]
-        when 'pageviews' then [2, :page]
-        else [1, :track]
+        when 'user_migrations' then [1, :aliaz]
+        when 'pageviews' then [3, :page]
+        when 'users' then [4, :identify]
+        else [2, :track]
         end
         idx_type << table['name']
       }
@@ -98,15 +102,22 @@ module HeapRS3Segment
       event_name = table['name'].split('_').map(&:capitalize).join(' ')
       p "Processing table(#{table['name']}) - \"#{event_name}\" event"
 
-      table['files'].each do |file|
+      files = table['files'].sort
+
+      if ['users', 'user_migrations'].include?(table['name'])
+        files.sort_by! do |path|
+          filename = path.split('/').last
+          filename.split('_').first.to_i
+        end
+      end
+
+      files.each do |file|
+        next if @skip_types.include?(table['type'])
         process_file(file, table['type'], event_name)
       end
     end
 
     def process_file(file, type, event_name)
-      return if [:page, :identify].include?(type)
-      # return unless type == :alias
-      # return if [:alias].include?(type)
       p "Processing file(#{file})"
 
       s3_file = s3_get_file(file)
@@ -121,8 +132,11 @@ module HeapRS3Segment
           puts "Flush done in #{Time.now - t}, continue"
         end
 
-        if type == :track
+        case type
+        when :track
           track(hash, event_name)
+        when :aliaz
+          store_aliaz(hash)
         else
           send(type, hash)
         end
@@ -133,8 +147,8 @@ module HeapRS3Segment
       Time.zone.parse(time).utc
     end
 
-    def wrap_cookie(value)
-      value ? "#{@project_identifier}|#{value}" : nil
+    def wrap_cookie(heap_user_id)
+      heap_user_id ? "#{@project_identifier}|#{resolve_heap_user(heap_user_id)}" : nil
     end
 
     def common_payload(hash)
@@ -214,20 +228,27 @@ module HeapRS3Segment
 
       payload[:traits] = hash.reject { |_, v| v.nil? }.merge(payload[:traits])
 
+      return if @identify_only_users && payload[:user_id].nil?
+
       @analytics.identify(payload)
     end
 
+    # deprecated
     def aliaz(hash)
       payload = {
         previous_id: wrap_cookie(hash['from_user_id']),
         anonymous_id: wrap_cookie(hash['to_user_id'])
-        # ,
-        # context: {
-        #   _heap_to_atb_workaround: true
-        # }
       }
 
       @analytics.alias(payload)
+    end
+
+    def store_aliaz(hash)
+      @aliaz_cache[hash['from_user_id']] = hash['to_user_id']
+    end
+
+    def resolve_heap_user(heap_user_id)
+      @aliaz_cache[heap_user_id] || heap_user_id
     end
 
     def s3uri_to_hash(s3uri)

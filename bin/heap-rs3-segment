@@ -30,22 +30,9 @@ raise unless project_id || aws_s3_bucket
 require 'segment/analytics'
 
 # dirty patch segment library
-module Segment
-  class Analytics
-    module Defaults
-      module Request
-        HOST = ENV['TRACKING_ENDPOINT']
-        # PORT = 9292
-        # RETRIES = 1
-      end
-
-      module MessageBatch
-        MAX_BYTES = 5_120_000
-        MAX_SIZE = 1_000
-      end
-    end
-  end
-end
+Segment::Analytics::Defaults::Request::HOST = ENV['TRACKING_ENDPOINT']
+Segment::Analytics::Defaults::MessageBatch::MAX_BYTES = 5_120_000 # 5 Mb
+Segment::Analytics::Defaults::MessageBatch::MAX_SIZE  = 1_000
 
 analytics = Segment::Analytics.new(
   write_key: project_id,
