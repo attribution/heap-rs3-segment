@@ -18,7 +18,7 @@ Gem::Specification.new do |gem|
 
   gem.add_dependency 'avro'
   gem.add_dependency 'snappy'
-  gem.add_dependency 'aws-sdk-s3'
+  gem.add_dependency 'aws-sdk-s3', '~> 1'
   gem.add_dependency 'analytics-ruby', '~> 2.0'
   gem.add_dependency 'activesupport'
 

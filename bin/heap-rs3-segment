@@ -25,19 +25,19 @@ aws_s3_bucket ||= ENV['AWS_S3_BUCKET']
 
 puts "Starting... (project_id: #{project_id}, aws_s3_bucket: #{aws_s3_bucket})"
 
-raise unless project_id || aws_s3_bucket
+raise unless project_id && aws_s3_bucket
 
 require 'segment/analytics'
-
 # dirty patch segment library
 Segment::Analytics::Defaults::Request::HOST = ENV['TRACKING_ENDPOINT']
 Segment::Analytics::Defaults::MessageBatch::MAX_BYTES = 5_120_000 # 5 Mb
-Segment::Analytics::Defaults::MessageBatch::MAX_SIZE  = 1_000
+# Segment::Analytics::Defaults::MessageBatch::MAX_SIZE  = 1_000
 
-analytics = Segment::Analytics.new(
+processor = HeapRS3Segment::Processors::Segment.new(
   write_key: project_id,
   on_error: Proc.new { |status, msg| print msg },
-  max_queue_size: 10_000
+  max_queue_size: 10_000,
+  batch_size: 500
   # stub: true
 )
 
@@ -45,9 +45,10 @@ require 'pry'
 require 'heap-rs3-segment'
 
 HeapRS3Segment::Loader.new(
-  analytics,
+  processor,
+  project_id,
   ENV['AWS_ACCESS_KEY_ID'],
   ENV['AWS_SECRET_ACCESS_KEY'],
-  ENV['AWS_REGION'],
+  ENV['AWS_REGION'] || 'us-east-1',
   aws_s3_bucket
 ).call

@@ -4,23 +4,18 @@ require 'active_support/time'
 
 module HeapRS3Segment
   class Loader
-    def initialize(analytics, aws_access_key_id, aws_secret_access_key, aws_region, aws_s3_bucket, aws_s3_bucket_prefix=nil)
+    def initialize(processor, project_identifier, aws_access_key_id, aws_secret_access_key, aws_region, aws_s3_bucket, aws_s3_bucket_prefix=nil)
       Time.zone = 'UTC'
 
       @s3 = Aws::S3::Client.new(access_key_id: aws_access_key_id, secret_access_key: aws_secret_access_key, region: aws_region)
       @bucket = aws_s3_bucket
       @prefix = aws_s3_bucket_prefix || MANIFEST_BUCKET_PREFIX
 
-      @project_identifier = analytics.
-        instance_variable_get('@client').
-        instance_variable_get('@write_key')
-      @segment_max_queue_size = analytics.
-        instance_variable_get('@client').
-        instance_variable_get('@max_queue_size')
-      @analytics = analytics
+      @project_identifier = project_identifier
+      @processor = processor
 
-      @aliaz_cache = {}
-      @skip_types = [] # [:page, :track, :identify, :aliaz]
+      @alias_cache = {}
+      @skip_types = [] # [:page, :track, :identify, :alias]
       @identify_only_users = false
     end
 
@@ -79,7 +74,7 @@ module HeapRS3Segment
       # custom sorter - any events then pageviews, identify, aliases
       index_type_name = ->(table) {
         idx_type = case table['name']
-        when 'user_migrations' then [1, :aliaz]
+        when 'user_migrations' then [1, :alias]
         when 'pageviews' then [3, :page]
         when 'users' then [4, :identify]
         else [2, :track]
@@ -125,18 +120,11 @@ module HeapRS3Segment
       avro = Avro::DataFile::Reader.new(s3_file.body, reader)
 
       avro.each do |hash|
-        if @analytics.queued_messages >= @segment_max_queue_size - 1
-          t = Time.now
-          puts "Queue size #{@analytics.queued_messages}, flushing"
-          @analytics.flush
-          puts "Flush done in #{Time.now - t}, continue"
-        end
-
         case type
         when :track
           track(hash, event_name)
-        when :aliaz
-          store_aliaz(hash)
+        when :alias
+          store_alias(hash)
         else
           send(type, hash)
         end
@@ -177,7 +165,7 @@ module HeapRS3Segment
         payload[:properties]['revenue'] = hash.delete('order_total')
       end
 
-      @analytics.track(payload)
+      @processor.track(payload)
     end
 
     def page(hash)
@@ -203,7 +191,7 @@ module HeapRS3Segment
         'url' => url
       }
 
-      @analytics.page(payload)
+      @processor.page(payload)
     end
 
     def identify(hash)
@@ -230,25 +218,24 @@ module HeapRS3Segment
 
       return if @identify_only_users && payload[:user_id].nil?
 
-      @analytics.identify(payload)
+      @processor.identify(payload)
     end
 
-    # deprecated
-    def aliaz(hash)
+    def alias(hash)
       payload = {
         previous_id: wrap_cookie(hash['from_user_id']),
         anonymous_id: wrap_cookie(hash['to_user_id'])
       }
 
-      @analytics.alias(payload)
+      @processor.alias(payload)
     end
 
-    def store_aliaz(hash)
-      @aliaz_cache[hash['from_user_id']] = hash['to_user_id']
+    def store_alias(hash)
+      @alias_cache[hash['from_user_id']] = hash['to_user_id']
     end
 
     def resolve_heap_user(heap_user_id)
-      @aliaz_cache[heap_user_id] || heap_user_id
+      @alias_cache[heap_user_id] || heap_user_id
     end
 
     def s3uri_to_hash(s3uri)

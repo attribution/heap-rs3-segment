@@ -1,4 +1,5 @@
 require 'heap-rs3-segment/loader'
+require 'heap-rs3-segment/processors/segment'
 
 module HeapRS3Segment
   MANIFEST_REGEXP = /\/sync_\d+\.json$/
