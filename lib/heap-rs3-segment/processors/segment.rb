@@ -14,11 +14,11 @@ module HeapRS3Segment
       def check_flush_queue!
         if @analytics.queued_messages >= @max_queue_size
           t = Time.now
-          puts "Max queue size reached - #{@processor.queued_messages}, flushing"
+          HeapRS3Segment.logger.info "Max queue size reached - #{@analytics.queued_messages}, flushing"
           @analytics.flush
           diff = Time.now - t
           rate = (@max_queue_size / diff).to_i
-          puts "Flush done in #{diff} seconds (#{rate} req/sec), continue"
+          HeapRS3Segment.logger.info "Flush done in #{diff} seconds (#{rate} req/sec), continue"
         end
       end
 

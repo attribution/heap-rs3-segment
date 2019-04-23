@@ -29,13 +29,17 @@ module HeapRS3Segment
 
         next if already_synced
 
-        puts 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip this sync, set @skip_types to skip certian event types and CTRL-D to continue'
+        logger.debug 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip this sync, set @skip_types to skip certian event types and CTRL-D to continue'
         binding.pry
 
         next if already_synced
 
         process_sync(obj)
       end
+    end
+
+    def logger
+      HeapRS3Segment.logger
     end
 
     def scan_manifests
@@ -59,14 +63,14 @@ module HeapRS3Segment
     end
 
     def get_manifest(obj)
-      p "Reading #{obj.key}"
+      logger.info "Reading #{obj.key}"
 
       manifest = s3_get_file(obj)
       JSON.parse(manifest.body.read)
     end
 
     def process_manifest(manifest)
-      p "Processing manifest(dump_id: #{manifest['dump_id']})"
+      logger.info "Processing manifest(dump_id: #{manifest['dump_id']})"
 
       # skip "sessions" processing - we don't need them
       tables = manifest['tables'].reject { |table| table['name'] == 'sessions'}
@@ -85,7 +89,7 @@ module HeapRS3Segment
 
       tables.each do |table|
         table['type'] = index_type_name.call(table)[1]
-        p "Order key #{index_type_name.call(table)}"
+        logger.info "Order key #{index_type_name.call(table)}"
       end
 
       tables.each do |table|
@@ -95,7 +99,7 @@ module HeapRS3Segment
 
     def process_table(table)
       event_name = table['name'].split('_').map(&:capitalize).join(' ')
-      p "Processing table(#{table['name']}) - \"#{event_name}\" event"
+      logger.info "Processing table(#{table['name']}) - \"#{event_name}\" event"
 
       files = table['files'].sort
 
@@ -113,13 +117,17 @@ module HeapRS3Segment
     end
 
     def process_file(file, type, event_name)
-      p "Processing file(#{file})"
+      logger.info "Processing file(#{file})"
 
       s3_file = s3_get_file(file)
       reader = Avro::IO::DatumReader.new
       avro = Avro::DataFile::Reader.new(s3_file.body, reader)
 
+      counter = 0
+      start_time = Time.now.utc # we start timer after file is read from S3
+
       avro.each do |hash|
+        counter += 1
         case type
         when :track
           track(hash, event_name)
@@ -129,10 +137,22 @@ module HeapRS3Segment
           send(type, hash)
         end
       end
+
+      diff = Time.now.utc - start_time
+      if diff > 0
+        logger.info "Done processing in #{diff.to_i} seconds (#{(counter / diff).to_i} req/sec)"
+      end
     end
 
     def parse_time(time)
       Time.zone.parse(time).utc
+    end
+    
+    def parse_heap_timestamp(value)
+      return unless value
+      Time.at(value / 1_000_000).utc.iso8601
+    rescue
+      value
     end
 
     def wrap_cookie(heap_user_id)
@@ -201,11 +221,13 @@ module HeapRS3Segment
         user_id: hash.delete('identity'),
         traits: {
           'email' => hash.delete('email') || hash.delete('_email'),
-          'heap_user_id' => heap_user_id
+          'heap_user_id' => heap_user_id,
+          'join_date' => parse_heap_timestamp(hash.delete('joindate')),
+          'last_modified' => parse_heap_timestamp(hash.delete('last_modified'))
         }.reject { |_, v| v.nil? }
       }
 
-      # Atlas Pet workaround
+      # common workaround for heap?
       if payload[:traits]['email'].nil?
         identity = payload[:user_id]
 
@@ -217,6 +239,8 @@ module HeapRS3Segment
       payload[:traits] = hash.reject { |_, v| v.nil? }.merge(payload[:traits])
 
       return if @identify_only_users && payload[:user_id].nil?
+
+      p payload
 
       @processor.identify(payload)
     end
