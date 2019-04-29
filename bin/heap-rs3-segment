@@ -33,7 +33,6 @@ Segment::Analytics::Defaults::Request::HOST = ENV['TRACKING_ENDPOINT']
 Segment::Analytics::Defaults::MessageBatch::MAX_BYTES = 5_120_000 # 5 Mb
 # Segment::Analytics::Defaults::MessageBatch::MAX_SIZE  = 1_000
 
-require 'pry'
 require 'heap-rs3-segment'
 
 processor = HeapRS3Segment::Processors::Segment.new(
@@ -47,8 +46,7 @@ processor = HeapRS3Segment::Processors::Segment.new(
 HeapRS3Segment::Loader.new(
   processor,
   project_id,
+  aws_s3_bucket,
   ENV['AWS_ACCESS_KEY_ID'],
-  ENV['AWS_SECRET_ACCESS_KEY'],
-  ENV['AWS_REGION'] || 'us-east-1',
-  aws_s3_bucket
+  ENV['AWS_SECRET_ACCESS_KEY']
 ).call

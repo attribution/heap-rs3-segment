@@ -4,37 +4,51 @@ require 'active_support/time'
 
 module HeapRS3Segment
   class Loader
-    def initialize(processor, project_identifier, aws_access_key_id, aws_secret_access_key, aws_region, aws_s3_bucket, aws_s3_bucket_prefix=nil)
+    AWS_S3_DEFAULT_REGION = 'us-east-1'
+
+    attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync, :skip_types, :identify_only_users
+
+    def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
-
-      @s3 = Aws::S3::Client.new(access_key_id: aws_access_key_id, secret_access_key: aws_secret_access_key, region: aws_region)
-      @bucket = aws_s3_bucket
-      @prefix = aws_s3_bucket_prefix || MANIFEST_BUCKET_PREFIX
-
-      @project_identifier = project_identifier
-      @processor = processor
-
       @alias_cache = {}
+
+      @processor = processor
+      @project_identifier = project_identifier
+
+      @s3 = Aws::S3::Client.new(
+        access_key_id: aws_access_key_id,
+        secret_access_key: aws_secret_access_key,
+        region: aws_region || AWS_S3_DEFAULT_REGION
+      )
+      @aws_s3_bucket = aws_s3_bucket
+      @aws_s3_bucket_prefix = MANIFEST_BUCKET_PREFIX
+
+      @prompt = true
+      @process_single_sync = true # stops after one sync is processed
       @skip_types = [] # [:page, :track, :identify, :alias]
-      @identify_only_users = false
+      @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
     end
 
     def call
       scan_manifests.each do |obj|
         already_synced = begin
-          @s3.head_object({bucket: @bucket, key: "imported_#{obj.key}"}) && true
+          @s3.head_object({ bucket: @aws_s3_bucket, key: "imported_#{obj.key}" }) && true
         rescue Aws::S3::Errors::NotFound
           nil
         end
 
         next if already_synced
 
-        logger.debug 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip this sync, set @skip_types to skip certian event types and CTRL-D to continue'
-        binding.pry
+        if @prompt
+          require 'pry'
+          logger.debug 'Ready to process ' + obj.key + ', type "exit!" to interrupt, "already_synced = true" to skip this sync, set @skip_types to skip certian event types and CTRL-D to continue'
+          binding.pry
 
-        next if already_synced
+          next if already_synced
+        end
 
         process_sync(obj)
+        break if @process_single_sync
       end
     end
 
@@ -43,15 +57,15 @@ module HeapRS3Segment
     end
 
     def scan_manifests
-      list_opts = { bucket: @bucket, prefix: @prefix, delimiter: '/' }
+      list_opts = { bucket: @aws_s3_bucket, prefix: @aws_s3_bucket_prefix, delimiter: '/' }
       resp = @s3.list_objects_v2(list_opts)
       resp.contents.select { |obj| obj.key.match(MANIFEST_REGEXP) }.sort_by(&:key)
     end
 
     def mark_manifest_as_synced(obj)
       @s3.copy_object(
-        copy_source: URI::encode("#{@bucket}/#{obj.key}"),
-        bucket: @bucket,
+        copy_source: URI::encode("#{@aws_s3_bucket}/#{obj.key}"),
+        bucket: @aws_s3_bucket,
         key: "imported_#{obj.key}"
       )
     end
@@ -140,7 +154,7 @@ module HeapRS3Segment
 
       diff = Time.now.utc - start_time
       if diff > 0
-        logger.info "Done processing in #{diff.to_i} seconds (#{(counter / diff).to_i} req/sec)"
+        logger.info "Done processing #{counter} events in #{diff.to_i} seconds (#{(counter / diff).to_i} req/sec)"
       end
     end
 
@@ -240,8 +254,6 @@ module HeapRS3Segment
 
       return if @identify_only_users && payload[:user_id].nil?
 
-      p payload
-
       @processor.identify(payload)
     end
 
@@ -274,7 +286,7 @@ module HeapRS3Segment
       when String
         s3uri_to_hash(obj)
       when Aws::S3::Types::Object
-        { bucket: @bucket, key: obj.key }
+        { bucket: @aws_s3_bucket, key: obj.key }
       when Hash
         obj
       else
