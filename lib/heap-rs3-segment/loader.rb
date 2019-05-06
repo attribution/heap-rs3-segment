@@ -6,7 +6,7 @@ module HeapRS3Segment
   class Loader
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
-    attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync, :skip_types, :identify_only_users
+    attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync, :skip_types, :identify_only_users, :revenue_mapping, :skip_tables
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
@@ -26,7 +26,9 @@ module HeapRS3Segment
       @prompt = true
       @process_single_sync = true # stops after one sync is processed
       @skip_types = [] # [:page, :track, :identify, :alias]
+      @skip_tables = ['sessions']
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
+      @revenue_mapping = {}
     end
 
     def call
@@ -71,9 +73,13 @@ module HeapRS3Segment
     end
 
     def process_sync(obj)
+      start_time = Time.now.utc
       manifest = get_manifest(obj)
       process_manifest(manifest)
       mark_manifest_as_synced(obj)
+
+      diff = Time.now.utc - start_time
+      logger.info "Done syncing #{obj.key} in #{diff.to_i} seconds"
     end
 
     def get_manifest(obj)
@@ -86,10 +92,10 @@ module HeapRS3Segment
     def process_manifest(manifest)
       logger.info "Processing manifest(dump_id: #{manifest['dump_id']})"
 
-      # skip "sessions" processing - we don't need them
-      tables = manifest['tables'].reject { |table| table['name'] == 'sessions'}
+      # skip tables we don't need, e.g. "sessions"
+      tables = manifest['tables'].reject { |table| @skip_tables.include?(table['name']) }
 
-      # custom sorter - any events then pageviews, identify, aliases
+      # custom sorter - aliases, any events then pageviews, finally identify
       index_type_name = ->(table) {
         idx_type = case table['name']
         when 'user_migrations' then [1, :alias]
@@ -191,12 +197,8 @@ module HeapRS3Segment
       payload[:event] = event_name
       payload[:properties].merge!(hash.reject { |_, v| v.nil? })
 
-      if event_name == 'Shopify Confirmed Order'
-        payload[:properties]['revenue'] = hash.delete('total_price')
-      end
-      
-      if event_name == 'Exported Order'
-        payload[:properties]['revenue'] = hash.delete('order_total')
+      if revenue_field = @revenue_mapping[event_name]
+        payload[:properties]['revenue'] = hash.delete(revenue_field.to_s)
       end
 
       @processor.track(payload)
@@ -220,9 +222,10 @@ module HeapRS3Segment
       end
 
       payload[:properties] = {
-        'referrer' => hash.delete('referrer'),
+        'referrer' => hash.delete('previous_page') || hash.delete('referrer'),
         'title' => hash.delete('title'),
-        'url' => url
+        'url' => url,
+        'session_referrer' => hash.delete('referrer')
       }
 
       @processor.page(payload)
