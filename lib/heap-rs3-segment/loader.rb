@@ -7,7 +7,8 @@ module HeapRS3Segment
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
-      :identify_only_users, :revenue_mapping, :revenue_fallback, :skip_types, :skip_tables, :skip_before
+      :identify_only_users, :revenue_mapping, :revenue_fallback,
+      :skip_types, :skip_tables, :skip_before
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
@@ -222,12 +223,12 @@ module HeapRS3Segment
       return if skip_before?(payload[:timestamp])
 
       payload[:event] = event_name
-      payload[:properties].merge!(hash.reject { |_, v| v.nil? })
+      payload[:properties].merge!(hash.reject { |_, v| v.nil? || v.to_s.bytesize > 200 })
 
       if revenue_field = @revenue_mapping[event_name]
-        payload[:properties]['revenue'] = hash.delete(revenue_field.to_s)
-      elsif payload[:properties]['revenue'].nil? && @revenue_fallback.any?
-        payload[:properties]['revenue'] = hash.values_at(@revenue_fallback).compact.first
+        payload[:properties]['revenue'] ||= hash.delete(revenue_field.to_s)
+      else @revenue_fallback.any?
+        payload[:properties]['revenue'] ||= hash.values_at(*@revenue_fallback).compact.first
       end
 
       @processor.track(payload)
