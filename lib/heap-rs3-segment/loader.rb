@@ -6,7 +6,8 @@ module HeapRS3Segment
   class Loader
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
-    attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync, :skip_types, :identify_only_users, :revenue_mapping, :skip_tables
+    attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
+      :identify_only_users, :revenue_mapping, :revenue_fallback, :skip_types, :skip_tables, :skip_before
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
@@ -27,8 +28,10 @@ module HeapRS3Segment
       @process_single_sync = true # stops after one sync is processed
       @skip_types = [] # [:page, :track, :identify, :alias]
       @skip_tables = ['sessions']
+      @skip_before = nil
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
       @revenue_mapping = {}
+      @revenue_fallback = []
     end
 
     def call
@@ -137,18 +140,34 @@ module HeapRS3Segment
     end
 
     def process_file(file, type, event_name)
+      # TODO selective file skip
+      # if match = file.match(/pageviews\/part-(\d+)/)
+      #   if match[1].to_i < 800 || match[1].to_i >= 900
+      #     logger.info "Skipping file(#{file})"
+      #     return
+      #   end
+      # end
+
       logger.info "Processing file(#{file})"
 
+      load_start_time = Time.now.utc
       s3_file = s3_get_file(file)
       reader = Avro::IO::DatumReader.new
       avro = Avro::DataFile::Reader.new(s3_file.body, reader)
+      load_diff = Time.now.utc - load_start_time
 
       counter = 0
+      skipped = 0
       start_time = Time.now.utc # we start timer after file is read from S3
 
       avro.each do |hash|
-        counter += 1
-        case type
+        # TODO sample raw logger
+        # if counter % 10_000 == 0
+        # if counter == 0
+        #   logger.info hash.inspect
+        # end
+
+        result = case type
         when :track
           track(hash, event_name)
         when :alias
@@ -156,11 +175,14 @@ module HeapRS3Segment
         else
           send(type, hash)
         end
+
+        skipped += 1 if result.nil?
+        counter += 1
       end
 
       diff = Time.now.utc - start_time
       if diff > 0
-        logger.info "Done processing #{counter} events in #{diff.to_i} seconds (#{(counter / diff).to_i} req/sec)"
+        logger.info "Done. Loading #{load_diff.to_i}s, processing #{diff.to_i}s, #{counter} rows, #{skipped} skipped (#{(counter / diff).to_i} rows/sec)"
       end
     end
 
@@ -191,14 +213,21 @@ module HeapRS3Segment
       }
     end
 
+    def skip_before?(timestamp)
+      @skip_before && timestamp < @skip_before
+    end
+
     def track(hash, event_name)
       payload = common_payload(hash)
+      return if skip_before?(payload[:timestamp])
 
       payload[:event] = event_name
       payload[:properties].merge!(hash.reject { |_, v| v.nil? })
 
       if revenue_field = @revenue_mapping[event_name]
         payload[:properties]['revenue'] = hash.delete(revenue_field.to_s)
+      elsif payload[:properties]['revenue'].nil? && @revenue_fallback.any?
+        payload[:properties]['revenue'] = hash.values_at(@revenue_fallback).compact.first
       end
 
       @processor.track(payload)
@@ -206,6 +235,8 @@ module HeapRS3Segment
 
     def page(hash)
       payload = common_payload(hash)
+      return if skip_before?(payload[:timestamp])
+
       payload[:name] = 'Loaded a Page'
       payload[:context] = {
         'ip' => hash.delete('ip')
