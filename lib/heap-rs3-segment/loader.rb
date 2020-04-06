@@ -7,7 +7,7 @@ module HeapRS3Segment
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
-      :identify_only_users, :revenue_mapping, :revenue_fallback,
+      :identify_only_users, :revenue_mapping, :revenue_fallback, :user_id_prop,
       :skip_types, :skip_tables, :skip_before
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
@@ -33,6 +33,7 @@ module HeapRS3Segment
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
       @revenue_mapping = {}
       @revenue_fallback = []
+      @user_id_prop = 'identity'
     end
 
     def call
@@ -265,25 +266,30 @@ module HeapRS3Segment
 
     def identify(hash)
       heap_user_id = hash.delete('user_id')
+      email = hash.delete('email') || hash.delete('_email')
+      identity = hash.delete('identity')
+
+      # common workaround for heap? email used as identity
+      if email.nil? && identity && identity.include?('@')
+        email = identity
+      end
+
+      # uses email as USER_ID or sets it to null (if email is empty)
+      if @user_id_prop == 'email'
+        identity = email
+      end
+
       payload = {
         anonymous_id: wrap_cookie(heap_user_id),
-        user_id: hash.delete('identity'),
+        user_id: identity,
         traits: {
-          'email' => hash.delete('email') || hash.delete('_email'),
+          'email' => email,
+          'identity' => identity,
           'heap_user_id' => heap_user_id,
           'join_date' => parse_heap_timestamp(hash.delete('joindate')),
           'last_modified' => parse_heap_timestamp(hash.delete('last_modified'))
         }.reject { |_, v| v.nil? }
       }
-
-      # common workaround for heap?
-      if payload[:traits]['email'].nil?
-        identity = payload[:user_id]
-
-        if identity && identity.include?('@')
-          payload[:traits]['email'] = identity
-        end
-      end
 
       payload[:traits] = hash.reject { |_, v| v.nil? }.merge(payload[:traits])
 
