@@ -71,7 +71,7 @@ module HeapRS3Segment
 
     def mark_manifest_as_synced(obj)
       @s3.copy_object(
-        copy_source: URI::encode("#{@aws_s3_bucket}/#{obj.key}"),
+        copy_source: "#{@aws_s3_bucket}/#{obj.key}",
         bucket: @aws_s3_bucket,
         key: "imported_#{obj.key}"
       )
@@ -209,6 +209,13 @@ module HeapRS3Segment
         anonymous_id: wrap_cookie(heap_user_id),
         message_id: "HEAP|#{hash.delete('event_id')}",
         timestamp: parse_time(hash.delete('time')),
+        context: {
+          'ip' => (hash.delete('ip') || hash.delete('browser_ip')),
+          'library' => {
+            'name' => 'HeapIntegration',
+            'version' => '1.0'
+          }
+        },
         properties: {
           'heap_user_id' => heap_user_id
         }
@@ -240,9 +247,6 @@ module HeapRS3Segment
       return if skip_before?(payload[:timestamp])
 
       payload[:name] = 'Loaded a Page'
-      payload[:context] = {
-        'ip' => hash.delete('ip')
-      }
 
       # TODO detect mobile and send screen event instead
       url = case hash['library']
