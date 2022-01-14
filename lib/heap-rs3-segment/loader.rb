@@ -65,8 +65,12 @@ module HeapRS3Segment
 
     def scan_manifests
       list_opts = { bucket: @aws_s3_bucket, prefix: @aws_s3_bucket_prefix, delimiter: '/' }
-      resp = @s3.list_objects_v2(list_opts)
-      resp.contents.select { |obj| obj.key.match(MANIFEST_REGEXP) }.sort_by(&:key)
+      all_objects = []
+      while (resp = @s3.list_objects_v2(list_opts)).next_continuation_token.present?
+        all_objects += resp.contents
+        list_opts[:continuation_token] = resp.next_continuation_token
+      end
+      all_objects.select { |obj| obj.key.match(MANIFEST_REGEXP) }.sort_by(&:key)
     end
 
     def mark_manifest_as_synced(obj)
