@@ -28,7 +28,7 @@ module HeapRS3Segment
       @prompt = true
       @process_single_sync = true # stops after one sync is processed
       @skip_types = [] # [:page, :track, :identify, :alias]
-      @skip_tables = ['sessions']
+      @skip_tables = ['sessions', '_event_metadata']
       @skip_before = nil
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
       @revenue_mapping = {}
@@ -191,7 +191,7 @@ module HeapRS3Segment
     def parse_time(time)
       Time.zone.parse(time).utc
     end
-    
+
     def parse_heap_timestamp(value)
       return unless value
       Time.at(value / 1_000_000).utc.iso8601
