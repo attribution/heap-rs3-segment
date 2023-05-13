@@ -258,8 +258,19 @@ module HeapRS3Segment
         'unknown://' + hash['event_id']
       end
 
+      referrer = if hash['session_time']
+        session_time = parse_time(hash.delete('session_time'))
+        if session_time == payload[:timestamp]
+          hash.delete('referrer')
+        end
+      end
+
+      if !referrer && (previous_page = hash.delete('previous_page'))
+        referrer = 'http://' + hash['domain'] + previous_page
+      end
+
       payload[:properties] = {
-        'referrer' => hash.delete('previous_page') || hash.delete('referrer'),
+        'referrer' => referrer,
         'title' => hash.delete('title'),
         'url' => url,
         'session_referrer' => hash.delete('referrer')
