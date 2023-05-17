@@ -7,7 +7,7 @@ module HeapRS3Segment
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
-      :identify_only_users, :revenue_mapping, :revenue_fallback, :user_id_prop,
+      :identify_only_users, :alias_on_identify, :revenue_mapping, :revenue_fallback, :user_id_prop,
       :skip_types, :skip_tables, :skip_before
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
@@ -31,6 +31,7 @@ module HeapRS3Segment
       @skip_tables = ['sessions', '_event_metadata']
       @skip_before = nil
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
+      @alias_on_identify = true # find migrated user in @alias_cache and fire alias events for identified users
       @revenue_mapping = {}
       @revenue_fallback = []
       @user_id_prop = 'identity'
@@ -78,6 +79,7 @@ module HeapRS3Segment
     end
 
     def process_sync(obj)
+      @alias_cache = {} # reset cache on every sync
       start_time = Time.now.utc
       manifest = get_manifest(obj)
       process_manifest(manifest)
@@ -174,6 +176,8 @@ module HeapRS3Segment
           track(hash, event_name)
         when :alias
           store_alias(hash)
+        when :manual_alias # useful for manually processing user_migrations as aliases
+          aliaz(hash)
         else
           send(type, hash)
         end
@@ -310,14 +314,28 @@ module HeapRS3Segment
 
       return if @identify_only_users && payload[:user_id].nil?
 
+      if @alias_on_identify
+        @alias_cache.
+          select { |_, v| v == heap_user_id }.
+          keys.
+          each do |from_user_id|
+            alias_payload = {
+              'from_user_id' => from_user_id,
+              'to_user_id'   => heap_user_id
+            }
+            aliaz(alias_payload)
+          end
+      end
+
       @processor.identify(payload)
     end
 
-    def alias(hash)
+    def aliaz(hash)
       payload = {
-        previous_id: wrap_cookie(hash['from_user_id']),
+        previous_id:  wrap_cookie(hash['from_user_id']),
         anonymous_id: wrap_cookie(hash['to_user_id'])
       }
+      p payload if @prompt
 
       @processor.alias(payload)
     end
