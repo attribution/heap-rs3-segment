@@ -203,8 +203,11 @@ module HeapRS3Segment
       value
     end
 
-    def wrap_cookie(heap_user_id)
-      heap_user_id ? "#{@project_identifier}|#{resolve_heap_user(heap_user_id)}" : nil
+    def wrap_cookie(heap_user_id, resolve=true)
+      return nil unless heap_user_id
+
+      resolved_user_id = resolve ? resolve_heap_user(heap_user_id) : heap_user_id
+      "#{@project_identifier}|#{resolved_user_id}"
     end
 
     def common_payload(hash)
@@ -332,8 +335,8 @@ module HeapRS3Segment
 
     def aliaz(hash)
       payload = {
-        previous_id:  wrap_cookie(hash['from_user_id']),
-        anonymous_id: wrap_cookie(hash['to_user_id'])
+        previous_id:  wrap_cookie(hash['from_user_id'], false),
+        anonymous_id: wrap_cookie(hash['to_user_id'],   false)
       }
       p payload if @prompt
 
