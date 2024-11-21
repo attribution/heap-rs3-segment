@@ -67,8 +67,12 @@ module HeapRS3Segment
     def scan_manifests
       list_opts = { bucket: @aws_s3_bucket, prefix: @aws_s3_bucket_prefix, delimiter: '/' }
       all_objects = []
-      while (resp = @s3.list_objects_v2(list_opts)).next_continuation_token.present?
+      while true
+        resp = @s3.list_objects_v2(list_opts)
         all_objects += resp.contents
+
+        break unless resp.next_continuation_token.present?
+
         list_opts[:continuation_token] = resp.next_continuation_token
       end
       all_objects.select { |obj| obj.key.match(MANIFEST_REGEXP) }.sort_by(&:key)
