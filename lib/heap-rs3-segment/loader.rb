@@ -13,6 +13,7 @@ module HeapRS3Segment
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
       @alias_cache = {}
+      @alias_cache_reverse = {}
 
       @processor = processor
       @project_identifier = project_identifier
@@ -270,7 +271,7 @@ module HeapRS3Segment
       when 'ios', 'android'
         "#{hash['library']}-app://" + hash.values_at('app_name', 'view_controller').compact.join('/')
       else
-        'unknown://' + hash['event_id']
+        'unknown://' + hash['event_id'].to_s
       end
 
       referrer = if hash['session_time']
@@ -326,16 +327,19 @@ module HeapRS3Segment
       return if @identify_only_users && payload[:user_id].nil?
 
       if @alias_on_identify
-        @alias_cache.
-          select { |_, v| v == heap_user_id }.
-          keys.
-          each do |from_user_id|
+        # OLD approach - works slower on big user migrations but consumes less memory
+        # @alias_cache.
+        #   select { |_, v| v == heap_user_id }.
+        #   keys.
+        if @alias_cache_reverse.has_key?(heap_user_id)
+          @alias_cache_reverse[heap_user_id].each do |from_user_id|
             alias_payload = {
               'from_user_id' => from_user_id,
               'to_user_id'   => heap_user_id
             }
             aliaz(alias_payload)
           end
+        end
       end
 
       @processor.identify(payload)
@@ -352,7 +356,12 @@ module HeapRS3Segment
     end
 
     def store_alias(hash)
-      @alias_cache[hash['from_user_id']] = hash['to_user_id']
+      if @alias_on_identify
+        @alias_cache_reverse[hash['to_user_id']] ||= Set.new
+        @alias_cache_reverse[hash['to_user_id']].add(hash['from_user_id'])
+      end
+
+      @alias_cache[hash['from_user_id']] ||= hash['to_user_id']
     end
 
     def resolve_heap_user(heap_user_id)
