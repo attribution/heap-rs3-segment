@@ -8,7 +8,7 @@ module HeapRS3Segment
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
       :identify_only_users, :alias_on_identify, :revenue_mapping, :revenue_fallback, :user_id_prop,
-      :skip_types, :skip_tables, :skip_before, :s3, :alias_cache, :alias_cache_reverse
+      :skip_types, :skip_tables, :skip_before, :skip_file, :s3, :alias_cache, :alias_cache_reverse
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
@@ -31,6 +31,7 @@ module HeapRS3Segment
       @skip_types = [] # [:page, :track, :identify, :alias]
       @skip_tables = ['sessions', '_event_metadata']
       @skip_before = nil
+      @skip_file = nil # skip file if it matches
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
       @alias_on_identify = true # find migrated user in @alias_cache and fire alias events for identified users
       @revenue_mapping = {}
@@ -155,13 +156,21 @@ module HeapRS3Segment
     end
 
     def process_file(file, type, event_name)
-      # TODO selective file skip
-      # if match = file.match(/pageviews\/part-(\d+)/)
-      #   if match[1].to_i < 800 || match[1].to_i >= 900
-      #     logger.info "Skipping file(#{file})"
-      #     return
+      # example skip logic
+      # heap_rs3.skip_file = ->(file) do
+      #   if file.match(/pageviews\/part-(\d+)/)
+      #     # skip files with part number outside of 10000..10999
+      #     # e.g. only process files that match pageviews/part-10???
+      #     unless (10000..10999).include?(match[1].to_i)
+      #       return true
+      #     end
       #   end
       # end
+
+      if @skip_file.is_a?(Proc) && skip_file.call(file)
+        logger.info "Skipping file(#{file})"
+        return
+      end
 
       logger.info "Processing file(#{file})"
 
