@@ -8,7 +8,7 @@ module HeapRS3Segment
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
       :identify_only_users, :alias_on_identify, :revenue_mapping, :revenue_fallback, :user_id_prop,
-      :skip_types, :skip_tables, :skip_before
+      :skip_types, :skip_tables, :skip_before, :s3, :alias_cache, :alias_cache_reverse
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
@@ -89,6 +89,8 @@ module HeapRS3Segment
 
     def process_sync(obj)
       @alias_cache = {} # reset cache on every sync
+      @alias_cache_reverse = {}
+
       start_time = Time.now.utc
       manifest = get_manifest(obj)
       process_manifest(manifest)
