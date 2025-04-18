@@ -4,16 +4,21 @@ require 'active_support/time'
 
 module HeapRS3Segment
   class Loader
+    # HEAP Data Schema
+    # https://help.heap.io/hc/en-us/articles/18700033317020-Heap-Connect-Data-Schema
+
     AWS_S3_DEFAULT_REGION = 'us-east-1'
 
     attr_accessor :processor, :project_identifier, :aws_s3_bucket, :prompt, :process_single_sync,
       :identify_only_users, :alias_on_identify, :revenue_mapping, :revenue_fallback, :user_id_prop,
-      :skip_types, :skip_tables, :skip_before, :skip_file, :s3, :alias_cache, :alias_cache_reverse
+      :skip_types, :skip_tables, :skip_before, :skip_file, :s3, :alias_cache, :alias_cache_reverse,
+      :session_cache
 
     def initialize(processor, project_identifier, aws_s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region=nil)
       Time.zone = 'UTC'
       @alias_cache = {}
       @alias_cache_reverse = {}
+      @session_cache = {}
 
       @processor = processor
       @project_identifier = project_identifier
@@ -29,7 +34,7 @@ module HeapRS3Segment
       @prompt = true
       @process_single_sync = true # stops after one sync is processed
       @skip_types = [] # [:page, :track, :identify, :alias]
-      @skip_tables = ['sessions', '_event_metadata']
+      @skip_tables = ['_event_metadata']
       @skip_before = nil
       @skip_file = nil # skip file if it matches
       @identify_only_users = false # this is useful when doing initial import and we don't need to identify anonymous users
@@ -89,8 +94,10 @@ module HeapRS3Segment
     end
 
     def process_sync(obj)
-      @alias_cache = {} # reset cache on every sync
-      @alias_cache_reverse = {}
+      # reset cachees on every sync
+      @alias_cache.clear
+      @alias_cache_reverse.clear
+      @session_cache.clear
 
       start_time = Time.now.utc
       manifest = get_manifest(obj)
@@ -118,8 +125,9 @@ module HeapRS3Segment
       index_type_name = ->(table) {
         idx_type = case table['name']
         when 'user_migrations' then [1, :alias]
-        when 'pageviews' then [3, :page]
-        when 'users' then [4, :identify]
+        when 'sessions' then [3, :session]
+        when 'pageviews' then [4, :page]
+        when 'users' then [5, :identify]
         else [2, :track]
         end
         idx_type << table['name']
@@ -194,6 +202,8 @@ module HeapRS3Segment
         result = case type
         when :track
           track(hash, event_name)
+        when :session
+          store_session(hash)
         when :alias
           store_alias(hash)
         when :manual_alias # useful for manually processing user_migrations as aliases
@@ -278,13 +288,15 @@ module HeapRS3Segment
       # TODO detect mobile and send screen event instead
       url = case hash['library']
       when 'web'
-        'http://' + hash.values_at('domain', 'path', 'query', 'hash').join
+        'https://' + hash.values_at('domain', 'path', 'query', 'hash').join
       when 'ios', 'android'
         "#{hash['library']}-app://" + hash.values_at('app_name', 'view_controller').compact.join('/')
       else
         'unknown://' + hash['event_id'].to_s
       end
 
+      # UPDATE 2025-04-18 probably that doesn't exist anymore or was custom
+      # if `session_time` present detect session referrer in place
       referrer = if hash['session_time']
         session_time = parse_time(hash.delete('session_time'))
         if session_time == payload[:timestamp]
@@ -292,15 +304,25 @@ module HeapRS3Segment
         end
       end
 
-      if !referrer && (previous_page = hash.delete('previous_page'))
-        referrer = 'http://' + hash['domain'] + previous_page
+      # UPDATE 2025-04-18 new logic to detect session start
+      referrer ||= if @session_cache.has_key?(hash['session_id']) && (@session_cache[hash['session_id']] == payload[:timestamp])
+        hash.delete('referrer')
+      end
+
+      # build previous page if referrer not found previously
+      previous_page = hash.delete('previous_page') || hash.delete('heap_previous_page')
+      if !referrer && previous_page
+        referrer = if hash['domain'].present?
+          'https://' + hash['domain'] + previous_page
+        else # weird cases when previous_page is something like local path e.g. "/C:/Users/bk221/OneDrive/Desktop/NFL%20Draft%20Big%20Board.html"
+          'unknown://' + previous_page
+        end
       end
 
       payload[:properties] = {
         'referrer' => referrer,
         'title' => hash.delete('title'),
-        'url' => url,
-        'session_referrer' => hash.delete('referrer')
+        'url' => url
       }
 
       @processor.page(payload)
@@ -364,6 +386,10 @@ module HeapRS3Segment
       p payload if @prompt
 
       @processor.alias(payload)
+    end
+
+    def store_session(hash)
+      @session_cache[hash['session_id']] = parse_time(hash['time'])
     end
 
     def store_alias(hash)
